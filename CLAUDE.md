@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Modern async Rust client for the Shodan.io API with integrated network reconnaissance tools. This is a complete rewrite of the original 2016-era library.
+**i1** - Multi-provider security operations CLI for the i1.is platform. Aggregates threat intelligence from multiple sources (Shodan, Censys, Criminal IP) with local reconnaissance tools and defensive capabilities.
 
 ## Build Commands
 
@@ -12,14 +12,11 @@ Modern async Rust client for the Shodan.io API with integrated network reconnais
 # Build all crates
 cargo build --workspace
 
-# Build with recon features
-cargo build --workspace --features full-recon
+# Build release
+cargo build --release
 
 # Run tests
 cargo test --all
-
-# Run a single test
-cargo test -p shodan-client test_name -- --nocapture
 
 # Lint (strict - must pass before commits)
 cargo clippy -- -D warnings
@@ -27,131 +24,136 @@ cargo clippy -- -D warnings
 # Format
 cargo fmt
 
-# Run examples (requires SHODAN_API_KEY env var)
-cargo run --example basic_search
-cargo run --example port_scan --features scanner
-
 # Run the CLI
-cargo run -p shodan-cli -- --help
-./target/debug/showdi1 --help
+cargo run -p i1-cli -- --help
+./target/release/i1 --help
 ```
 
 ## Architecture
 
-Cargo workspace with five crates:
+Cargo workspace with multi-provider architecture:
 
 ```
 crates/
-├── shodan-core/     # Core types, error handling (zero external deps)
-├── shodan-client/   # HTTP client, API endpoints (reqwest + tokio)
-├── shodan-recon/    # Network tools (scanner, whois) - optional
-├── shodan/          # Facade crate, re-exports all public API
-└── shodan-cli/      # Educational CLI (binary: showdi1)
+├── i1-core/        # Core types, errors, shared traits
+├── i1-client/      # Unified client that aggregates providers
+├── i1-providers/   # Provider traits (HostLookup, SearchProvider, etc.)
+├── i1-shodan/      # Shodan API provider
+├── i1-censys/      # Censys API provider
+├── i1-criminalip/  # Criminal IP API provider
+├── i1-native/      # i1.is native provider (WHOIS, DNS)
+├── i1-recon/       # Local reconnaissance tools (scanner, enrichment)
+├── i1/             # Facade crate, re-exports all public API
+└── i1-cli/         # CLI binary
+```
+
+### Provider Traits (i1-providers)
+
+```rust
+#[async_trait]
+pub trait Provider: Send + Sync {
+    fn name(&self) -> &'static str;
+    fn display_name(&self) -> &'static str;
+    fn base_url(&self) -> &str;
+    fn is_configured(&self) -> bool;
+    async fn health_check(&self) -> Result<ProviderHealth>;
+}
+
+#[async_trait]
+pub trait HostLookup: Provider {
+    async fn lookup_host(&self, ip: &str) -> Result<HostInfo>;
+}
+
+#[async_trait]
+pub trait SearchProvider: Provider {
+    async fn search(&self, query: &str, page: Option<u32>) -> Result<SearchResults>;
+    async fn count(&self, query: &str) -> Result<u64>;
+}
+
+#[async_trait]
+pub trait DnsProvider: Provider {
+    async fn resolve(&self, hostname: &str) -> Result<Vec<IpAddr>>;
+    async fn reverse(&self, ip: &str) -> Result<Vec<String>>;
+}
 ```
 
 ### Key Files
 
-- `crates/shodan-core/src/types/*.rs` - All API response types
-- `crates/shodan-core/src/error.rs` - Error types
-- `crates/shodan-client/src/client.rs` - Main `ShodanClient` implementation
-- `crates/shodan-client/src/api/*.rs` - API endpoint modules
+- `crates/i1-core/src/types/*.rs` - All shared API response types
+- `crates/i1-core/src/error.rs` - I1Error enum
+- `crates/i1-providers/src/lib.rs` - Provider traits
+- `crates/i1-shodan/src/lib.rs` - Shodan implementation
+- `crates/i1-censys/src/lib.rs` - Censys implementation
+- `crates/i1-cli/src/cli/args.rs` - Clap command definitions
+- `crates/i1-cli/src/cli/commands/*.rs` - Command implementations
+- `crates/i1-cli/src/defend/mod.rs` - Firewall rule generation
 
-### API Design Pattern
+## CLI (i1)
 
-Builder pattern with fluent API:
+Security operations CLI with multi-provider support.
 
-```rust
-// Simple call
-let host = client.search().host("8.8.8.8").await?;
+```bash
+# Basic commands
+i1 myip                         # Show your public IP
+i1 host 8.8.8.8                 # Look up host (uses Shodan by default)
+i1 search "apache port:80"      # Search database
+i1 count "nginx"                # Count without credits
+i1 dns resolve example.com      # DNS lookup
 
-// With options
-let host = client.search()
-    .host_with_options("8.8.8.8")
-    .history(true)
-    .send()
-    .await?;
+# Multi-provider
+i1 host 8.8.8.8 --all           # Query all providers
+i1 host 8.8.8.8 -p censys       # Use specific provider
 
-// Search with builder
-let results = client.search()
-    .query("apache")
-    .facets(["port", "org"])
-    .page(1)
-    .send()
-    .await?;
+# Defensive tools
+i1 defend status                # Show blocking status
+i1 defend geoblock add cn ru    # Block countries
+i1 defend ban 1.2.3.4           # Ban IP
+i1 defend export --format nft   # Generate firewall rules
+
+# Configuration
+i1 config show                  # Show current config
+i1 config set shodan-key xxx    # Set Shodan API key
+i1 config set censys-id xxx     # Set Censys API ID
+i1 config set censys-secret xxx # Set Censys secret
+i1 config set criminalip-key xx # Set Criminal IP key
 ```
 
-## Feature Flags
+## Environment Variables
 
-- `default` - Uses rustls TLS
-- `rustls` / `native-tls` - TLS backend choice
-- `recon` - Enable shodan-recon crate
-- `scanner` - Port scanning (TCP connect)
-- `whois` - WHOIS lookups
-- `full-recon` - All recon features
+```bash
+# API keys (also settable via config)
+SHODAN_API_KEY=xxx       # Shodan API key
+I1_SHODAN_KEY=xxx        # Alternative for Shodan
+I1_CENSYS_ID=xxx         # Censys API ID
+I1_CENSYS_SECRET=xxx     # Censys API secret
+I1_CRIMINALIP_KEY=xxx    # Criminal IP API key
+```
 
-## API Coverage
+## Authentication Methods
 
-40+ endpoints organized by module:
+Each provider uses different authentication:
 
-| Module | Endpoints |
-|--------|-----------|
-| `search()` | host, query, count, facets, filters, tokens |
-| `scan()` | ports, protocols, request, list, status |
-| `alerts()` | create, list, get, delete, triggers, notifiers |
-| `notifiers()` | list, get, create, delete, providers |
-| `dns()` | domain, resolve, reverse |
-| `directory()` | list, search, tags |
-| `bulk()` | datasets, files (enterprise) |
-| `org()` | info, add_member, remove_member (enterprise) |
-| `account()` | profile, api_info |
-| `tools()` | my_ip, http_headers |
+| Provider    | Auth Method | Configuration |
+|-------------|-------------|---------------|
+| Shodan      | API key in query param | `?key=xxx` |
+| Censys      | HTTP Basic Auth | `username:password` |
+| Criminal IP | API key header | `x-api-key: xxx` |
+| Native      | None (local) | - |
 
 ## Testing
 
 ```bash
-# Unit tests with mocks
+# Unit tests
 cargo test --all
 
-# With specific features
-cargo test --all --features full-recon
-
-# Live API tests (requires SHODAN_API_KEY env var)
+# Live API tests (requires API keys)
 SHODAN_API_KEY=xxx cargo test --features live-tests
 ```
-
-## CLI (showdi1)
-
-Educational command-line interface with defensive tools.
-
-```bash
-# Shodan API commands
-showdi1 host 8.8.8.8              # Look up host
-showdi1 search "apache port:80"   # Search database
-showdi1 count "nginx"             # Count without credits
-showdi1 dns domain example.com    # DNS lookup
-showdi1 account                   # Check credits
-
-# Defensive tools (geo-blocking)
-showdi1 defend status             # Show blocking status
-showdi1 defend geoblock add cn ru # Block countries
-showdi1 defend ban 1.2.3.4        # Ban IP
-showdi1 defend export             # Generate nftables rules
-
-# Educational mode
-showdi1 host 8.8.8.8 --explain    # Explains what command does
-showdi1 defend geoblock codes     # Country code reference
-```
-
-Key files:
-- `crates/shodan-cli/src/cli/args.rs` - Clap command definitions
-- `crates/shodan-cli/src/cli/commands/*.rs` - Command implementations
-- `crates/shodan-cli/src/defend/mod.rs` - Firewall rule generation
-- `crates/shodan-cli/src/education/mod.rs` - Educational explanations
 
 ## Notes
 
 - License: MIT OR Apache-2.0
 - Min Rust: 1.75+ (async trait stabilization)
-- DNS and trace features temporarily disabled (upstream API changes)
-- Workspace uses strict clippy lints: `pedantic`, `nursery`, `cargo` enabled (some common patterns allowed via workspace lints)
-- Tests use `wiremock` for HTTP mocking (no live API calls in unit tests)
+- Config stored at: `~/.config/i1/config.toml` (Linux) or platform equivalent
+- Uses `reqwest` with rustls for HTTP, `tokio` for async runtime
+- Rate limiting per-provider using `governor` crate

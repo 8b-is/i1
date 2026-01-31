@@ -1,0 +1,19 @@
+[package]
+name = "i1-core"
+description = "Core types and traits for i1 security reconnaissance"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+
+[lints]
+workspace = true

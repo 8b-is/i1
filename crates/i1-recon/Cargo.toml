@@ -1,0 +1,33 @@
+[package]
+name = "i1-recon"
+description = "Local network reconnaissance tools for i1"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[features]
+default = []
+scanner = []
+whois = ["whois-rs"]
+# dns and trace disabled temporarily due to API changes
+# dns = ["hickory-resolver"]
+# trace = ["trippy-core"]
+full = ["scanner", "whois"]
+
+[dependencies]
+i1-core = { workspace = true }
+i1-client = { workspace = true }
+tokio = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+futures-util = { workspace = true }
+
+# Optional: WHOIS
+whois-rs = { workspace = true, optional = true }
+
+[lints]
+workspace = true

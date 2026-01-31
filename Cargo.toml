@@ -1,20 +1,27 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/shodan-core",
-    "crates/shodan-client",
-    "crates/shodan-recon",
-    "crates/shodan",
-    "crates/shodan-cli",
+    "crates/i1-core",
+    "crates/i1-client",
+    "crates/i1-recon",
+    "crates/i1",
+    "crates/i1-cli",
+    "crates/i1-providers",
+    "crates/i1-shodan",
+    "crates/i1-censys",
+    "crates/i1-criminalip",
+    "crates/i1-native",
+    "crates/i1-honeypot",
+    "crates/i1-ca",
 ]
 
 [workspace.package]
-version = "2.0.0"
+version = "0.1.0"
 edition = "2021"
 rust-version = "1.75"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/femiagbabiaka/shodan-rust"
-keywords = ["shodan", "security", "networking", "reconnaissance", "osint"]
+repository = "https://github.com/8b-is/i1"
+keywords = ["security", "reconnaissance", "osint", "threat-intelligence", "i1"]
 categories = ["network-programming", "api-bindings"]
 
 [workspace.dependencies]
@@ -43,7 +50,6 @@ tokio-stream = "0.1"
 governor = "0.8"
 
 # Network tools (optional features)
-# pistol = "4.0"  # Disabled - has broken dependencies
 whois-rs = "1.6"
 hickory-resolver = "0.25"
 trippy-core = "0.11"
@@ -55,9 +61,15 @@ url = "2.5"
 chrono = { version = "0.4", features = ["serde"] }
 
 # Internal crates
-shodan-core = { path = "crates/shodan-core" }
-shodan-client = { path = "crates/shodan-client" }
-shodan-recon = { path = "crates/shodan-recon" }
+i1-core = { path = "crates/i1-core" }
+i1-client = { path = "crates/i1-client" }
+i1-recon = { path = "crates/i1-recon" }
+i1-providers = { path = "crates/i1-providers" }
+i1-shodan = { path = "crates/i1-shodan" }
+i1-censys = { path = "crates/i1-censys" }
+i1-criminalip = { path = "crates/i1-criminalip" }
+i1-native = { path = "crates/i1-native" }
+i1-honeypot = { path = "crates/i1-honeypot" }
 
 # Testing
 wiremock = "0.6"

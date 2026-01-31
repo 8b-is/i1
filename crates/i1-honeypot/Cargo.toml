@@ -1,0 +1,15 @@
+[package]
+name = "i1-honeypot"
+version = "0.1.0"
+edition = "2021"
+description = "Honeypot generation for i1.is - fake cards, wallets, credentials that trap scammers"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/i1-is/i1"
+
+[dependencies]
+rand = "0.8"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.0", features = ["v4", "serde"] }
+thiserror = "1.0"

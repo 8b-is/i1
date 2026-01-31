@@ -1,0 +1,53 @@
+[package]
+name = "i1"
+description = "Unified security reconnaissance toolkit - multi-provider threat intelligence"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "../../README.md"
+
+[features]
+default = ["rustls", "shodan"]
+
+# TLS backends (pick one)
+rustls = ["i1-client/rustls"]
+native-tls = ["i1-client/native-tls"]
+
+# Providers
+shodan = ["i1-shodan"]
+censys = ["i1-censys"]
+criminalip = ["i1-criminalip"]
+native = ["i1-native"]
+all-providers = ["shodan", "censys", "criminalip", "native"]
+
+# Network reconnaissance tools
+recon = ["i1-recon"]
+scanner = ["recon", "i1-recon/scanner"]
+whois = ["recon", "i1-recon/whois"]
+full-recon = ["scanner", "whois"]
+
+[dependencies]
+i1-core = { workspace = true }
+i1-client = { workspace = true }
+i1-providers = { workspace = true }
+i1-recon = { workspace = true, optional = true }
+i1-shodan = { workspace = true, optional = true }
+i1-censys = { workspace = true, optional = true }
+i1-criminalip = { workspace = true, optional = true }
+i1-native = { workspace = true, optional = true }
+
+# Re-export key runtime
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+
+[dev-dependencies]
+tokio-test = { workspace = true }
+
+[lints]
+workspace = true
