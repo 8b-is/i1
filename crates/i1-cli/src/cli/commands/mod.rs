@@ -6,6 +6,7 @@ pub mod defend;
 pub mod dns;
 pub mod host;
 pub mod myip;
+pub mod scan;
 pub mod search;
 pub mod threat;
 

@@ -45,15 +45,16 @@ pub async fn run() -> Result<()> {
         no_color: cli.no_color,
     };
 
-    // Dispatch to appropriate command
+    // Dispatch to appropriate command, or run interactive scan if none given
     match cli.command {
-        Commands::Host(args) => commands::host::execute(ctx, args).await,
-        Commands::Search(args) => commands::search::execute(ctx, args).await,
-        Commands::Count(args) => commands::count::execute(ctx, args).await,
-        Commands::Dns(args) => commands::dns::execute(ctx, args).await,
-        Commands::Myip => commands::myip::execute(ctx).await,
-        Commands::Defend(args) => commands::defend::execute(ctx, args).await,
-        Commands::Config(args) => commands::config::execute(ctx, args).await,
-        Commands::Threat(args) => commands::threat::execute(&ctx, &args).await,
+        Some(Commands::Host(args)) => commands::host::execute(ctx, args).await,
+        Some(Commands::Search(args)) => commands::search::execute(ctx, args).await,
+        Some(Commands::Count(args)) => commands::count::execute(ctx, args).await,
+        Some(Commands::Dns(args)) => commands::dns::execute(ctx, args).await,
+        Some(Commands::Myip) => commands::myip::execute(ctx).await,
+        Some(Commands::Defend(args)) => commands::defend::execute(ctx, args).await,
+        Some(Commands::Config(args)) => commands::config::execute(ctx, args).await,
+        Some(Commands::Threat(args)) => commands::threat::execute(&ctx, &args).await,
+        None => commands::scan::execute(ctx).await,
     }
 }

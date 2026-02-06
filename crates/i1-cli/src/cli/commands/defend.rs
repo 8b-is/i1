@@ -1115,7 +1115,6 @@ async fn community_fetch(min_reports: u32, replace: bool, dry_run: bool) -> Resu
 }
 
 async fn community_subscribe(interval: u32, remove: bool) -> Result<()> {
-    use std::fs;
     use std::process::Command;
 
     let i1_path = std::env::current_exe()
@@ -1415,8 +1414,6 @@ async fn patrol_run(
     use std::collections::HashMap;
     use std::process::Command;
 
-    let compose_path = compose_dir.unwrap_or_else(|| "/opt/mailcow-dockerized".to_string());
-
     println!("{}", "━".repeat(60).dimmed());
     println!("{}", "🔍 PATROL - Scanning for attackers".cyan().bold());
     println!("{}", "━".repeat(60).dimmed());
@@ -1440,82 +1437,236 @@ async fn patrol_run(
     let whitelisted: std::collections::HashSet<&str> =
         state.whitelisted_ips.iter().map(|s| s.as_str()).collect();
 
-    // Get nginx logs from docker compose
-    print!("{} Fetching nginx logs... ", "→".cyan());
-    std::io::Write::flush(&mut std::io::stdout())?;
-
     let since_arg = format!("{}m", window);
-    let output = Command::new("docker")
-        .args([
-            "compose",
-            "-f",
-            &format!("{}/docker-compose.yml", compose_path),
-            "logs",
-            "--no-color",
-            "--since",
-            &since_arg,
-            "nginx-mailcow",
-        ])
-        .output();
+    let mut all_logs = String::new();
+    let mut log_sources: Vec<String> = Vec::new();
 
-    let nginx_logs = match output {
-        Ok(out) if out.status.success() || !out.stdout.is_empty() => {
-            println!("{}", "✓".green());
-            String::from_utf8_lossy(&out.stdout).to_string()
+    // ── Docker container log collection ──────────────────────────────────
+    if let Some(ref dir) = compose_dir {
+        // Explicit compose dir: use docker compose logs for all services
+        print!("{} Fetching logs from {}... ", "→".cyan(), dir);
+        std::io::Write::flush(&mut std::io::stdout())?;
+
+        let output = Command::new("docker")
+            .args([
+                "compose",
+                "-f",
+                &format!("{}/docker-compose.yml", dir),
+                "logs",
+                "--no-color",
+                "--since",
+                &since_arg,
+            ])
+            .output();
+
+        match output {
+            Ok(out) if out.status.success() || !out.stdout.is_empty() => {
+                let logs = String::from_utf8_lossy(&out.stdout).to_string();
+                println!("{} ({} lines)", "✓".green(), logs.lines().count());
+                all_logs.push_str(&logs);
+                log_sources.push(format!("compose:{}", dir));
+            }
+            _ => {
+                println!("{} (could not read)", "✗".red().dimmed());
+            }
         }
-        _ => {
-            // Fallback: try docker logs directly
-            let fallback = Command::new("docker")
-                .args(["logs", "--since", &since_arg, "maatmail-nginx-mailcow-1"])
-                .output();
-            match fallback {
-                Ok(out) if !out.stdout.is_empty() => {
-                    println!("{} (via docker logs)", "✓".green());
-                    String::from_utf8_lossy(&out.stdout).to_string()
-                }
-                _ => {
-                    println!("{}", "✗".red());
-                    anyhow::bail!(
-                        "Could not fetch nginx logs. Is mailcow running at {}?",
-                        compose_path
-                    );
+    } else {
+        // Auto-detect: discover all running Docker containers
+        let docker_check = Command::new("docker").args(["ps", "-q"]).output();
+
+        if let Ok(out) = docker_check {
+            if out.status.success() && !out.stdout.is_empty() {
+                // Get container names
+                let ps_output = Command::new("docker")
+                    .args([
+                        "ps",
+                        "--format",
+                        "{{.Names}}",
+                    ])
+                    .output();
+
+                if let Ok(ps) = ps_output {
+                    let names: Vec<String> = String::from_utf8_lossy(&ps.stdout)
+                        .lines()
+                        .map(String::from)
+                        .collect();
+
+                    if !names.is_empty() {
+                        println!(
+                            "{} Found {} running container(s)",
+                            "→".cyan(),
+                            names.len()
+                        );
+
+                        for name in &names {
+                            print!("  {} {}... ", "→".cyan(), name.dimmed());
+                            std::io::Write::flush(&mut std::io::stdout())?;
+
+                            let output = Command::new("docker")
+                                .args([
+                                    "logs",
+                                    "--since",
+                                    &since_arg,
+                                    name,
+                                ])
+                                .output();
+
+                            match output {
+                                Ok(out) => {
+                                    // Docker logs go to both stdout and stderr
+                                    let stdout =
+                                        String::from_utf8_lossy(&out.stdout).to_string();
+                                    let stderr =
+                                        String::from_utf8_lossy(&out.stderr).to_string();
+                                    let combined_lines =
+                                        stdout.lines().count() + stderr.lines().count();
+                                    if combined_lines > 0 {
+                                        println!(
+                                            "{} ({} lines)",
+                                            "✓".green(),
+                                            combined_lines
+                                        );
+                                        all_logs.push_str(&stdout);
+                                        all_logs.push('\n');
+                                        all_logs.push_str(&stderr);
+                                        all_logs.push('\n');
+                                        log_sources.push(format!("docker:{}", name));
+                                    } else {
+                                        println!("{}", "empty".dimmed());
+                                    }
+                                }
+                                _ => {
+                                    println!("{}", "skip".dimmed());
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
-    };
+    }
 
-    // Also get postfix logs for SMTP abuse
-    let postfix_output = Command::new("docker")
-        .args([
-            "compose",
-            "-f",
-            &format!("{}/docker-compose.yml", compose_path),
-            "logs",
-            "--no-color",
-            "--since",
-            &since_arg,
-            "postfix-mailcow",
-        ])
-        .output()
-        .ok();
+    // ── System logs (journalctl) ─────────────────────────────────────────
+    // Check for auth/SSH logs regardless of Docker
+    let journal_check = Command::new("journalctl")
+        .args(["--since", &format!("{} min ago", window), "-u", "sshd", "--no-pager", "-q"])
+        .output();
 
-    // Parse nginx logs - extract IP, status code, path
+    if let Ok(out) = journal_check {
+        if out.status.success() && !out.stdout.is_empty() {
+            let logs = String::from_utf8_lossy(&out.stdout).to_string();
+            let line_count = logs.lines().count();
+            if line_count > 0 {
+                print!("{} System SSH logs... ", "→".cyan());
+                println!("{} ({} lines)", "✓".green(), line_count);
+                all_logs.push_str(&logs);
+                all_logs.push('\n');
+                log_sources.push("journalctl:sshd".to_string());
+            }
+        }
+    }
+
+    // Check for nginx/apache system logs
+    for unit in &["nginx", "apache2", "httpd"] {
+        let journal = Command::new("journalctl")
+            .args([
+                "--since",
+                &format!("{} min ago", window),
+                "-u",
+                unit,
+                "--no-pager",
+                "-q",
+            ])
+            .output();
+
+        if let Ok(out) = journal {
+            if out.status.success() && !out.stdout.is_empty() {
+                let logs = String::from_utf8_lossy(&out.stdout).to_string();
+                let line_count = logs.lines().count();
+                if line_count > 0 {
+                    print!("{} System {} logs... ", "→".cyan(), unit);
+                    println!("{} ({} lines)", "✓".green(), line_count);
+                    all_logs.push_str(&logs);
+                    all_logs.push('\n');
+                    log_sources.push(format!("journalctl:{}", unit));
+                }
+            }
+        }
+    }
+
+    // ── Check for log files directly ─────────────────────────────────────
+    for log_file in &["/var/log/auth.log", "/var/log/nginx/access.log"] {
+        if std::path::Path::new(log_file).exists() {
+            let output = Command::new("tail").args(["-n", "500", log_file]).output();
+
+            if let Ok(out) = output {
+                if !out.stdout.is_empty() {
+                    let logs = String::from_utf8_lossy(&out.stdout).to_string();
+                    let line_count = logs.lines().count();
+                    if line_count > 0 {
+                        print!("{} {}... ", "→".cyan(), log_file);
+                        println!("{} ({} lines)", "✓".green(), line_count);
+                        all_logs.push_str(&logs);
+                        all_logs.push('\n');
+                        log_sources.push(format!("file:{}", log_file));
+                    }
+                }
+            }
+        }
+    }
+
+    println!();
+
+    if all_logs.is_empty() {
+        println!("{}", "No log sources found.".yellow());
+        println!("  Patrol checks: Docker containers, journalctl (sshd/nginx), /var/log/");
+        println!(
+            "  Use {} to specify a compose project.",
+            "--compose-dir".cyan()
+        );
+        return Ok(());
+    }
+
+    println!(
+        "{} Sources: {}",
+        "✓".green(),
+        log_sources.join(", ").dimmed()
+    );
+    println!();
+
+    // ── Parse all logs ───────────────────────────────────────────────────
     let mut ip_stats: HashMap<String, PatrolHit> = HashMap::new();
 
-    for line in nginx_logs.lines() {
-        // nginx log format: "IP - user [date] "METHOD /path HTTP/x.x" STATUS ..."
+    for line in all_logs.lines() {
+        // Try to extract an IP and path from each line (nginx/access log format)
         let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() < 10 {
+        if parts.len() < 3 {
             continue;
         }
 
         // Find the IP (first thing that looks like an IP in the line)
         let ip = match parts.iter().find(|p| {
-            p.contains('.') && p.split('.').count() == 4 && p.parse::<std::net::Ipv4Addr>().is_ok()
-                || p.contains(':') && p.parse::<std::net::Ipv6Addr>().is_ok()
+            (p.contains('.') && p.split('.').count() == 4 && p.parse::<std::net::Ipv4Addr>().is_ok())
+                || (p.contains(':') && p.parse::<std::net::Ipv6Addr>().is_ok())
         }) {
             Some(ip) => ip.to_string(),
-            None => continue,
+            None => {
+                // Also try bracket-enclosed IPs: [1.2.3.4]
+                if let Some(start) = line.find('[') {
+                    if let Some(end) = line[start..].find(']') {
+                        let candidate = &line[start + 1..start + end];
+                        if is_valid_ip(candidate) {
+                            candidate.to_string()
+                        } else {
+                            continue;
+                        }
+                    } else {
+                        continue;
+                    }
+                } else {
+                    continue;
+                }
+            }
         };
 
         // Skip internal/never-ban IPs
@@ -1530,7 +1681,7 @@ async fn patrol_run(
             .unwrap_or(&"/")
             .to_string();
 
-        // Find the HTTP status code (3 digit number after HTTP/x.x")
+        // Find the HTTP status code (3 digit number)
         let status: u16 = parts
             .iter()
             .filter_map(|p| {
@@ -1543,7 +1694,20 @@ async fn patrol_run(
             .find(|&s| (100..600).contains(&s))
             .unwrap_or(0);
 
-        let is_attack = ATTACK_PATTERNS.iter().any(|pat| path.contains(pat));
+        // Check for SSH/auth abuse patterns
+        let is_ssh_abuse = line.contains("Failed password")
+            || line.contains("Invalid user")
+            || line.contains("authentication failure")
+            || line.contains("Connection closed by authenticating user");
+
+        // Check for SMTP abuse
+        let is_smtp_abuse = line.contains("NOQUEUE: reject")
+            || line.contains("authentication failed")
+            || line.contains("too many errors");
+
+        let is_attack = ATTACK_PATTERNS.iter().any(|pat| path.contains(pat))
+            || is_ssh_abuse
+            || is_smtp_abuse;
         let is_404 = status == 404;
 
         let hit = ip_stats.entry(ip.clone()).or_insert_with(|| PatrolHit {
@@ -1562,47 +1726,12 @@ async fn patrol_run(
             hit.four04_hits += 1;
         }
         if (is_attack || is_404) && hit.sample_paths.len() < 5 {
-            hit.sample_paths.push(path);
-        }
-    }
-
-    // Parse postfix logs for SMTP abuse
-    if let Some(Ok(pf_out)) = postfix_output.map(|o| {
-        if o.stdout.is_empty() {
-            Err(())
-        } else {
-            Ok(String::from_utf8_lossy(&o.stdout).to_string())
-        }
-    }) {
-        for line in pf_out.lines() {
-            // Look for rejected connections, auth failures
-            if line.contains("NOQUEUE: reject")
-                || line.contains("authentication failed")
-                || line.contains("too many errors")
-            {
-                // Extract IP from postfix log
-                if let Some(start) = line.find('[') {
-                    if let Some(end) = line[start..].find(']') {
-                        let ip = &line[start + 1..start + end];
-                        if is_valid_ip(ip)
-                            && !PATROL_NEVER_BAN.iter().any(|prefix| ip.starts_with(prefix))
-                        {
-                            let hit =
-                                ip_stats.entry(ip.to_string()).or_insert_with(|| PatrolHit {
-                                    ip: ip.to_string(),
-                                    total_requests: 0,
-                                    attack_hits: 0,
-                                    four04_hits: 0,
-                                    sample_paths: Vec::new(),
-                                });
-                            hit.attack_hits += 1;
-                            hit.total_requests += 1;
-                            if hit.sample_paths.len() < 5 {
-                                hit.sample_paths.push("SMTP abuse".to_string());
-                            }
-                        }
-                    }
-                }
+            if is_ssh_abuse {
+                hit.sample_paths.push("SSH brute-force".to_string());
+            } else if is_smtp_abuse {
+                hit.sample_paths.push("SMTP abuse".to_string());
+            } else {
+                hit.sample_paths.push(path);
             }
         }
     }
@@ -1613,15 +1742,14 @@ async fn patrol_run(
 
     // Filter to attackers that exceed threshold
     // Key insight: require BOTH suspicious paths AND 404s for web scanning,
-    // or high attack_hits for SMTP abuse (which doesn't produce 404s)
+    // or high attack_hits for SMTP/SSH abuse (which doesn't produce 404s)
     let mut attackers: Vec<PatrolHit> = ip_stats
         .into_values()
         .filter(|h| {
-            // Must have attack-pattern 404s (webshell scanning) or pure SMTP abuse
             let has_web_scanning = h.four04_hits >= threshold;
-            let has_smtp_abuse = h.sample_paths.iter().any(|p| p == "SMTP abuse")
+            let has_abuse = (h.sample_paths.iter().any(|p| p == "SMTP abuse" || p == "SSH brute-force"))
                 && h.attack_hits >= threshold;
-            has_web_scanning || has_smtp_abuse
+            has_web_scanning || has_abuse
         })
         .collect();
 
@@ -1647,9 +1775,10 @@ async fn patrol_run(
         .partition(|h| !already_banned.contains(h.ip.as_str()) && !whitelisted.contains(h.ip.as_str()));
 
     println!(
-        "{} Scanned {} log lines",
+        "{} Scanned {} log lines across {} source(s)",
         "✓".green(),
-        nginx_logs.lines().count()
+        all_logs.lines().count(),
+        log_sources.len()
     );
     println!();
 
@@ -1812,7 +1941,7 @@ async fn patrol_cron(interval: u32, remove: bool, threshold: u32) -> Result<()> 
     println!("  {}", cron_line.dimmed());
     println!();
     println!("This will:");
-    println!("  • Scan mailcow nginx logs every {} minutes", interval);
+    println!("  • Scan Docker + system logs every {} minutes", interval);
     println!("  • Auto-ban IPs with {} or more attack hits", threshold);
     println!("  • Apply iptables rules immediately");
     println!("  • Log actions to syslog (journalctl -t i1-patrol)");

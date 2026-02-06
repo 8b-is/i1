@@ -332,6 +332,7 @@ impl DnsProvider for ShodanProvider {
 /// This is different from the /shodan/host/{ip} response - search matches
 /// are individual service banners with host info flattened in.
 #[derive(Debug, serde::Deserialize)]
+#[allow(dead_code)]
 struct ShodanSearchMatch {
     #[serde(default)]
     ip_str: String,
