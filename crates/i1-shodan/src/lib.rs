@@ -227,11 +227,29 @@ impl SearchProvider for ShodanProvider {
             .get_with_query("/shodan/host/search", &query_params)
             .await?;
 
+        // Aggregate matches by IP - search returns one match per service/port,
+        // but we want one HostInfo per IP with all ports collected.
+        let mut ip_map: std::collections::HashMap<String, HostInfo> =
+            std::collections::HashMap::new();
+
+        for m in response.matches {
+            let port = m.port;
+            let ip_key = m.ip_str.clone();
+            let entry = ip_map
+                .entry(ip_key)
+                .or_insert_with(|| m.into_host_info());
+            if !entry.ports.contains(&port) {
+                entry.ports.push(port);
+            }
+        }
+
+        let results: Vec<HostInfo> = ip_map.into_values().collect();
+
         Ok(SearchResults {
             provider: "shodan".to_string(),
             total: response.total,
             page: page.unwrap_or(1),
-            results: response.matches,
+            results,
             facets: response.facets,
         })
     }
@@ -309,10 +327,109 @@ impl DnsProvider for ShodanProvider {
 }
 
 // Shodan-specific response types
+
+/// Raw search match from Shodan's /shodan/host/search API.
+/// This is different from the /shodan/host/{ip} response - search matches
+/// are individual service banners with host info flattened in.
+#[derive(Debug, serde::Deserialize)]
+struct ShodanSearchMatch {
+    #[serde(default)]
+    ip_str: String,
+    #[serde(default)]
+    port: u16,
+    #[serde(default)]
+    org: Option<String>,
+    #[serde(default)]
+    isp: Option<String>,
+    #[serde(default)]
+    asn: Option<String>,
+    #[serde(default)]
+    hostnames: Vec<String>,
+    #[serde(default)]
+    domains: Vec<String>,
+    #[serde(default)]
+    os: Option<String>,
+    #[serde(default)]
+    product: Option<String>,
+    #[serde(default)]
+    version: Option<String>,
+    #[serde(default)]
+    transport: Option<String>,
+    #[serde(default)]
+    location: Option<ShodanSearchLocation>,
+    #[serde(default)]
+    data: Option<String>,
+    #[serde(default)]
+    tags: Vec<String>,
+    #[serde(default)]
+    vulns: Option<std::collections::HashMap<String, serde_json::Value>>,
+    #[serde(default)]
+    http: Option<serde_json::Value>,
+    #[serde(default)]
+    ssl: Option<serde_json::Value>,
+    #[serde(default)]
+    ssh: Option<serde_json::Value>,
+    #[serde(default, rename = "_shodan")]
+    shodan_module: Option<serde_json::Value>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct ShodanSearchLocation {
+    #[serde(default)]
+    country_code: Option<String>,
+    #[serde(default)]
+    country_name: Option<String>,
+    #[serde(default)]
+    city: Option<String>,
+    #[serde(default)]
+    region_code: Option<String>,
+}
+
+impl ShodanSearchMatch {
+    fn into_host_info(self) -> HostInfo {
+        let location = self.location.unwrap_or(ShodanSearchLocation {
+            country_code: None,
+            country_name: None,
+            city: None,
+            region_code: None,
+        });
+
+        HostInfo {
+            ip: None,
+            ip_str: self.ip_str,
+            hostnames: self.hostnames,
+            domains: self.domains,
+            org: self.org,
+            asn: self.asn,
+            isp: self.isp,
+            os: self.os,
+            ports: vec![self.port],
+            vulns: self
+                .vulns
+                .map(|v| v.keys().cloned().collect())
+                .unwrap_or_default(),
+            tags: self.tags,
+            location: i1_core::GeoLocation {
+                country_code: location.country_code,
+                country_name: location.country_name,
+                city: location.city,
+                region_code: location.region_code,
+                postal_code: None,
+                latitude: None,
+                longitude: None,
+                area_code: None,
+                dma_code: None,
+            },
+            data: Vec::new(),
+            last_update: None,
+        }
+    }
+}
+
 #[derive(Debug, serde::Deserialize)]
 struct ShodanSearchResponse {
     total: u64,
-    matches: Vec<HostInfo>,
+    matches: Vec<ShodanSearchMatch>,
     facets: Option<serde_json::Value>,
 }
 
